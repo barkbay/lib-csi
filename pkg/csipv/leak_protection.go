@@ -77,7 +77,7 @@ func NewLeakProtectionController(
 	onPVCDelete func(pvc *corev1.PersistentVolumeClaim, createVolumeName string) error,
 ) (*LeakProtectionController, error) {
 
-	span, _ := apm.StartSpan(ctx, "validateVolumeCreateReq", "lvm")
+	span, _ := apm.StartSpan(ctx, "NewLeakProtectionController", "lib-csi")
 	defer span.End()
 
 	if driverName == "" {
@@ -165,7 +165,7 @@ func (c *LeakProtectionController) processNextWorkItem() bool {
 		return true
 	}
 
-	err = c.processPVC(pvcNamespace, pvcName)
+	err = c.processPVC(context.Background(), pvcNamespace, pvcName)
 	if err == nil {
 		c.queue.Forget(pvcKey)
 		return true
@@ -177,7 +177,11 @@ func (c *LeakProtectionController) processNextWorkItem() bool {
 	return true
 }
 
-func (c *LeakProtectionController) processPVC(pvcNamespace, pvcName string) error {
+func (c *LeakProtectionController) processPVC(ctx context.Context, pvcNamespace, pvcName string) error {
+	tx := apm.DefaultTracer().StartTransaction("processPVC", "leak-protection-controller")
+	defer tx.End()
+	ctx = apm.ContextWithTransaction(ctx, tx)
+
 	pvc, err := c.pvcLister.PersistentVolumeClaims(pvcNamespace).Get(pvcName)
 	if apierrors.IsNotFound(err) {
 		klog.V(4).InfoS("pvc not found, ignoring...", "pvc", klog.KRef(pvcNamespace, pvcName))
@@ -192,7 +196,7 @@ func (c *LeakProtectionController) processPVC(pvcNamespace, pvcName string) erro
 	// if pvc gets bound to a persistent volume, we can safely remove the finalizer
 	// since csi external-provisioner guarantees to call csi spec DeleteVolume method.
 	if pvc.Status.Phase == corev1.ClaimBound {
-		return c.removeFinalizer(pvc)
+		return c.removeFinalizer(ctx, pvc)
 	}
 
 	// process pvc in case it's marked for deletion.
@@ -213,7 +217,7 @@ func (c *LeakProtectionController) processPVC(pvcNamespace, pvcName string) erro
 		}
 		klog.InfoS("deleted volume via csi driver if exists", "volume", volumeName,
 			"driver", c.driverName, "pvc", klog.KRef(pvcNamespace, pvcName))
-		return c.removeFinalizer(pvc)
+		return c.removeFinalizer(ctx, pvc)
 	}
 	return nil
 }
@@ -232,7 +236,10 @@ func (c *LeakProtectionController) finalizerExists(pvc *corev1.PersistentVolumeC
 	return false
 }
 
-func (c *LeakProtectionController) addFinalizer(pvc *corev1.PersistentVolumeClaim, volumeName string) error {
+func (c *LeakProtectionController) addFinalizer(ctx context.Context, pvc *corev1.PersistentVolumeClaim, volumeName string) error {
+	span, ctx := apm.StartSpan(ctx, "addFinalizer", "controller")
+	defer span.End()
+
 	finalizer := c.GetFinalizer()
 	if c.finalizerExists(pvc) {
 		klog.V(4).InfoS("finalizer already exists, ignoring...",
@@ -253,7 +260,10 @@ func (c *LeakProtectionController) addFinalizer(pvc *corev1.PersistentVolumeClai
 	return nil
 }
 
-func (c *LeakProtectionController) removeFinalizer(pvc *corev1.PersistentVolumeClaim) error {
+func (c *LeakProtectionController) removeFinalizer(ctx context.Context, pvc *corev1.PersistentVolumeClaim) error {
+	span, ctx := apm.StartSpan(ctx, "removeFinalizer", "controller")
+	defer span.End()
+
 	finalizer := c.GetFinalizer()
 	claimClone := pvc.DeepCopy()
 
@@ -300,8 +310,14 @@ func (c *LeakProtectionController) removeFinalizer(pvc *corev1.PersistentVolumeC
 //			defer finishCreateVolume()
 //			..... start provisioning volume here .....
 //	}
-func (c *LeakProtectionController) BeginCreateVolume(volumeName,
-	pvcNamespace, pvcName string) (func(), error) {
+func (c *LeakProtectionController) BeginCreateVolume(
+	ctx context.Context,
+	volumeName, pvcNamespace, pvcName string,
+) (func(), error) {
+
+	span, ctx := apm.StartSpan(ctx, "BeginCreateVolume", "controller")
+	defer span.End()
+
 	pvc, err := c.client.CoreV1().PersistentVolumeClaims(pvcNamespace).
 		Get(context.TODO(), pvcName, metav1.GetOptions{})
 	if err != nil {
@@ -324,7 +340,7 @@ func (c *LeakProtectionController) BeginCreateVolume(volumeName,
 			"csi driver already has volume creation in progress")
 	}
 
-	if err = c.addFinalizer(pvc, volumeName); err != nil {
+	if err = c.addFinalizer(ctx, pvc, volumeName); err != nil {
 		finishCreateVolume() // make sure we clean up on error.
 		return nil, err
 	}
