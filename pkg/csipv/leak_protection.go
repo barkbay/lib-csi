@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"go.elastic.co/apm/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
@@ -69,11 +70,16 @@ type LeakProtectionController struct {
 }
 
 func NewLeakProtectionController(
+	ctx context.Context,
 	client clientset.Interface,
 	pvcInformer coreinformers.PersistentVolumeClaimInformer,
 	driverName string,
 	onPVCDelete func(pvc *corev1.PersistentVolumeClaim, createVolumeName string) error,
 ) (*LeakProtectionController, error) {
+
+	span, _ := apm.StartSpan(ctx, "validateVolumeCreateReq", "lvm")
+	defer span.End()
+
 	if driverName == "" {
 		return nil, fmt.Errorf("empty csi driver name")
 	}
@@ -285,14 +291,15 @@ func (c *LeakProtectionController) removeFinalizer(pvc *corev1.PersistentVolumeC
 // Returned finishCreateVolume function must be called (preferably under defer)
 // after attempting to provision volume.
 // e.g
-// {
-//		finishCreateVolume, err := c.BeginCreateVolume("volumeId", "namespace", "name")
-//		if err != nil {
-//			return nil, status.Errorf(codes.FailedPrecondition, err.Error())
-//		}
-//		defer finishCreateVolume()
-//		..... start provisioning volume here .....
-// }
+//
+//	{
+//			finishCreateVolume, err := c.BeginCreateVolume("volumeId", "namespace", "name")
+//			if err != nil {
+//				return nil, status.Errorf(codes.FailedPrecondition, err.Error())
+//			}
+//			defer finishCreateVolume()
+//			..... start provisioning volume here .....
+//	}
 func (c *LeakProtectionController) BeginCreateVolume(volumeName,
 	pvcNamespace, pvcName string) (func(), error) {
 	pvc, err := c.client.CoreV1().PersistentVolumeClaims(pvcNamespace).

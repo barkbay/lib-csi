@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.1.2
 	github.com/imdario/mergo v0.3.7 // indirect
 	github.com/pkg/errors v0.9.1
+	go.elastic.co/apm/v2 v2.4.1
 	google.golang.org/grpc v1.27.1
 	k8s.io/api v0.20.2
 	k8s.io/apimachinery v0.20.2

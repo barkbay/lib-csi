@@ -42,3 +42,7 @@ license-check:
        fi
 	@echo "--> Done checking license."
 	@echo
+
+.PHONY: vendor
+vendor: go.mod go.sum deps
+	@go mod vendor
